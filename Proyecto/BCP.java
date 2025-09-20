@@ -1,0 +1,23 @@
+/*
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
+ * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
+ */
+package com.mycompany.minipc;
+
+/**
+ *
+ * @author jhonn
+ */
+public class BCP {
+    public int idProceso = -1;
+    public String estado = "-";
+    public int baseCodigo = -1;
+    public int limiteCodigo = -1;
+    public int baseDatos = -1;
+
+    public void reiniciar() {
+        idProceso = -1;
+        estado = "-";
+        baseCodigo = limiteCodigo = baseDatos = -1;
+    }
+}
