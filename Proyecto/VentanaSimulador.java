@@ -18,10 +18,11 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.List;
+import java.util.*;
 
 public class VentanaSimulador extends JFrame {
 
-    private final Memoria memoria = new Memoria(512, 8);
+    private final Memoria memoria = new Memoria(512, 64);
     private final CPU cpu = new CPU();
     private final BCP bcp = new BCP();
     private Programa programa = null;
@@ -51,7 +52,7 @@ public class VentanaSimulador extends JFrame {
     private final JLabel lblIR = new JLabel("-");
 
     private final JSpinner spTamMemoria = new JSpinner(new SpinnerNumberModel(512, 16, 4096, 1));
-    private final JSpinner spTamSO = new JSpinner(new SpinnerNumberModel(8, 1, 2048, 1));
+    private final JSpinner spTamSO = new JSpinner(new SpinnerNumberModel(64, 1, 2048, 1));
 
     private final JButton btnAsignarMemoria = new JButton("Asignar Memoria");
     private final JButton btnCargar = new JButton("Cargar .asm");
@@ -61,7 +62,30 @@ public class VentanaSimulador extends JFrame {
     private final JButton btnDetener = new JButton("Detener");
     private final JButton btnLimpiar = new JButton("Limpiar");
 
-    private javax.swing.Timer temporizador;
+    private Temporizador temporizador;
+    
+    private Instruccion instruccionActual = null;
+    private int ciclosPendientes = 0;
+    
+    private static final Map<String,Integer> DURACIONES = new HashMap<>();
+    static {
+        DURACIONES.put("LOAD", 2);
+        DURACIONES.put("STORE", 2);
+        DURACIONES.put("MOV", 5);
+        DURACIONES.put("ADD", 3);
+        DURACIONES.put("SUB", 3);
+        DURACIONES.put("INC", 1);
+        DURACIONES.put("DEC", 1);
+        DURACIONES.put("SWAP", 1);
+        DURACIONES.put("INT", 2);
+        DURACIONES.put("JMP", 2);
+        DURACIONES.put("CMP", 2);
+        DURACIONES.put("JE", 2);
+        DURACIONES.put("JNE", 2);
+        DURACIONES.put("PARAM", 3);
+        DURACIONES.put("PUSH", 1);
+        DURACIONES.put("POP", 1);
+    }
 
     public VentanaSimulador() {
         super("MiniPC - Tarea 1");
@@ -126,11 +150,12 @@ public class VentanaSimulador extends JFrame {
         btnCargar.addActionListener(e -> cargarDesdeChooser());
         btnRecargar.addActionListener(e -> recargarUltimoArchivo());
         btnPaso.addActionListener(e -> ejecutarPaso());
-        btnEjecutar.addActionListener(e -> temporizador.start());
-        btnDetener.addActionListener(e -> temporizador.stop());
+        btnEjecutar.addActionListener(e -> temporizador.iniciar());
+        btnDetener.addActionListener(e -> temporizador.detener());
         btnLimpiar.addActionListener(e -> limpiarTodo());
 
-        temporizador = new javax.swing.Timer(400, e -> ejecutarPaso());
+        temporizador = new Temporizador(1000, this::ejecutarPaso);
+
     }
 
     private JPanel construirPanelCPU() {
@@ -242,24 +267,32 @@ public class VentanaSimulador extends JFrame {
     private void ejecutarPaso() {
         if (programa == null) return;
         if (cpu.estado == CPU.Estado.TERMINADO) {
-            temporizador.stop();
+            temporizador.detener();
             lblEstado.setText("Programa finalizado.");
             return;
         }
 
-        if (cpu.PC >= programa.longitud()) {
-            cpu.estado = CPU.Estado.TERMINADO;
-            actualizarVistas();
-            lblEstado.setText("Fin del programa.");
-            return;
+        if (instruccionActual == null) {
+            if (cpu.PC >= programa.longitud()) {
+                cpu.estado = CPU.Estado.TERMINADO;
+                lblEstado.setText("Fin del programa.");
+                return;
+            }
+            instruccionActual = programa.obtener(cpu.PC);
+            ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
         }
 
-        Instruccion inst = programa.obtener(cpu.PC);
-        ejecutarInstruccion(inst);
-        cpu.PC++;
+        ciclosPendientes--;
+        if (ciclosPendientes <= 0) {
+            ejecutarInstruccion(instruccionActual);
+            cpu.PC++;
+            instruccionActual = null;
+        }
+
         actualizarVistas();
         modeloMemoria.fireTableDataChanged();
     }
+
 
     private void ejecutarInstruccion(Instruccion inst) {
         String op = inst.opcode;
@@ -375,7 +408,7 @@ public class VentanaSimulador extends JFrame {
         } catch (Exception e) {
             cpu.estado = CPU.Estado.ERROR;
             lblEstado.setText("Error en instrucción: " + inst.opcode + " -> " + e.getMessage());
-            temporizador.stop();
+            temporizador.detener();
         }
     }
 
@@ -399,7 +432,7 @@ public class VentanaSimulador extends JFrame {
         switch (code) {
             case "20":
                 cpu.estado = CPU.Estado.TERMINADO;
-                temporizador.stop();
+                temporizador.detener();
                 lblEstado.setText("INT 20H -> Programa finalizado");
                 break;
 
