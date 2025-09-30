@@ -61,11 +61,15 @@ public class VentanaSimulador extends JFrame {
     private final JButton btnEjecutar = new JButton("Ejecutar");
     private final JButton btnDetener = new JButton("Detener");
     private final JButton btnLimpiar = new JButton("Limpiar");
+    private final JButton btnEstadisticas = new JButton("Estadísticas");
 
     private Temporizador temporizador;
     
     private Instruccion instruccionActual = null;
     private int ciclosPendientes = 0;
+    
+    private final java.util.List<Estadistica> estadisticas = new ArrayList<>();
+    private Estadistica estadisticaActual = null;
     
     private static final Map<String,Integer> DURACIONES = new HashMap<>();
     static {
@@ -108,6 +112,7 @@ public class VentanaSimulador extends JFrame {
         barraSuperior.add(btnEjecutar);
         barraSuperior.add(btnDetener);
         barraSuperior.add(btnLimpiar);
+        barraSuperior.add(btnEstadisticas);
 
         JPanel panelCPU = construirPanelCPU();
         JPanel panelBCP = construirPanelBCP();
@@ -153,6 +158,8 @@ public class VentanaSimulador extends JFrame {
         btnEjecutar.addActionListener(e -> temporizador.iniciar());
         btnDetener.addActionListener(e -> temporizador.detener());
         btnLimpiar.addActionListener(e -> limpiarTodo());
+        
+        btnEstadisticas.addActionListener(e -> mostrarEstadisticas());
 
         temporizador = new Temporizador(1000, this::ejecutarPaso);
 
@@ -259,6 +266,8 @@ public class VentanaSimulador extends JFrame {
             actualizarVistas();
             modeloMemoria.fireTableDataChanged();
             lblEstado.setText("Programa cargado en memoria.");
+            
+            estadisticaActual = new Estadistica(archivo.getName());
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Formato .asm inválido", JOptionPane.ERROR_MESSAGE);
         }
@@ -268,6 +277,7 @@ public class VentanaSimulador extends JFrame {
         if (programa == null) return;
         if (cpu.estado == CPU.Estado.TERMINADO) {
             temporizador.detener();
+            registrarEstadistica();
             lblEstado.setText("Programa finalizado.");
             return;
         }
@@ -275,6 +285,7 @@ public class VentanaSimulador extends JFrame {
         if (instruccionActual == null) {
             if (cpu.PC >= programa.longitud()) {
                 cpu.estado = CPU.Estado.TERMINADO;
+                registrarEstadistica();
                 lblEstado.setText("Fin del programa.");
                 return;
             }
@@ -283,6 +294,7 @@ public class VentanaSimulador extends JFrame {
         }
 
         ciclosPendientes--;
+
         if (ciclosPendientes <= 0) {
             ejecutarInstruccion(instruccionActual);
             cpu.PC++;
@@ -292,6 +304,7 @@ public class VentanaSimulador extends JFrame {
         actualizarVistas();
         modeloMemoria.fireTableDataChanged();
     }
+
 
 
     private void ejecutarInstruccion(Instruccion inst) {
@@ -515,6 +528,32 @@ public class VentanaSimulador extends JFrame {
         if (programa != null && cpu.PC < programa.longitud()) {
             lblIR.setText(programa.obtener(cpu.PC).aBinario());
         }
+    }
+    
+    private void registrarEstadistica() {
+        if (estadisticaActual != null) {
+            estadisticaActual.marcarFin();
+            estadisticas.add(estadisticaActual);
+            JOptionPane.showMessageDialog(this,
+                    "Programa finalizado.\n" + estadisticaActual.toString(),
+                    "Estadística", JOptionPane.INFORMATION_MESSAGE);
+            estadisticaActual = null;
+        }
+    }
+
+    private void mostrarEstadisticas() {
+        if (estadisticas.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No hay estadísticas registradas.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Estadistica est : estadisticas) {
+            sb.append(est.toString()).append("\n");
+        }
+        JTextArea area = new JTextArea(sb.toString(), 10, 50);
+        area.setEditable(false);
+        JOptionPane.showMessageDialog(this, new JScrollPane(area),
+                "Historial de Estadísticas", JOptionPane.INFORMATION_MESSAGE);
     }
 
     private int obtenerPCAbsoluto() {
