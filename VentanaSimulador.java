@@ -18,25 +18,28 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedList;
+import java.util.Map;
 import java.util.Queue;
 
 public class VentanaSimulador extends JFrame {
 
-    private final Memoria memoria = new Memoria(32, 8);
+    private final Memoria memoria = new Memoria(512, 64);
     private final CPU cpu = new CPU();
     public static BCP bcp = new BCP();
+    
+    private File ultimoArchivoCargado = null;
+    
     private int proximaDireccionLibre = memoria.tamanoSO;  
     private int contProgramas = 0;
     private final Queue<Proceso> colaEspera = new LinkedList<>();
     
     private Proceso cabeza = null;        // primer proceso cargado
     private Proceso cola = null;          // último proceso (para ir encadenando)
-    private Proceso procesoActual = null; // el que se está ejecutando
-    private int contadorProcesos = 1;     // para dar IDs únicos
-
-    private File ultimoArchivoCargado = null;
+    private Proceso procesoActual = null; 
+    private int contadorProcesos = 1;     // ID's de los procesos
 
     private final ModeloTablaMemoria modeloMemoria = new ModeloTablaMemoria(memoria, () -> obtenerPCAbsoluto());
     private final JTable tablaMemoria = new JTable(modeloMemoria);
@@ -61,8 +64,8 @@ public class VentanaSimulador extends JFrame {
     private final JLabel lblBaseDatos = new JLabel("-");
     private final JLabel lblIR = new JLabel("-");
 
-    private final JSpinner spTamMemoria = new JSpinner(new SpinnerNumberModel(32, 16, 4096, 1));
-    private final JSpinner spTamSO = new JSpinner(new SpinnerNumberModel(8, 1, 2048, 1));
+    private final JSpinner spTamMemoria = new JSpinner(new SpinnerNumberModel(512, 16, 4096, 1));
+    private final JSpinner spTamSO = new JSpinner(new SpinnerNumberModel(64, 1, 2048, 1));
 
     private final JButton btnAsignarMemoria = new JButton("Asignar Memoria");
     private final JButton btnCargar = new JButton("Cargar .asm");
@@ -71,9 +74,36 @@ public class VentanaSimulador extends JFrame {
     private final JButton btnEjecutar = new JButton("Ejecutar");
     private final JButton btnDetener = new JButton("Detener");
     private final JButton btnLimpiar = new JButton("Limpiar");
+    private final JButton btnEstadisticas = new JButton("Estadísticas");
     JButton btnEstados = new JButton("Ver estados");
+    
+    private Temporizador temporizador;
 
-    private javax.swing.Timer temporizador;
+    private Instruccion instruccionActual = null;
+    private int ciclosPendientes = 0;
+    
+    private final java.util.List<Estadistica> estadisticas = new ArrayList<>();
+    private Estadistica estadisticaActual = null;
+    
+    private static final Map<String,Integer> DURACIONES = new HashMap<>();
+    static {
+        DURACIONES.put("LOAD", 2);
+        DURACIONES.put("STORE", 2);
+        DURACIONES.put("MOV", 5);
+        DURACIONES.put("ADD", 3);
+        DURACIONES.put("SUB", 3);
+        DURACIONES.put("INC", 1);
+        DURACIONES.put("DEC", 1);
+        DURACIONES.put("SWAP", 1);
+        DURACIONES.put("INT", 2);
+        DURACIONES.put("JMP", 2);
+        DURACIONES.put("CMP", 2);
+        DURACIONES.put("JE", 2);
+        DURACIONES.put("JNE", 2);
+        DURACIONES.put("PARAM", 3);
+        DURACIONES.put("PUSH", 1);
+        DURACIONES.put("POP", 1);
+    }
 
     public VentanaSimulador() {
         super("MiniPC - Tarea 1");
@@ -96,6 +126,8 @@ public class VentanaSimulador extends JFrame {
         barraSuperior.add(btnEjecutar);
         barraSuperior.add(btnDetener);
         barraSuperior.add(btnLimpiar);
+        barraSuperior.add(btnEstadisticas);
+        barraSuperior.add(btnEstados);
 
         JPanel panelCPU = construirPanelCPU();
         JPanel panelBCP = construirPanelBCP();
@@ -138,13 +170,13 @@ public class VentanaSimulador extends JFrame {
         btnCargar.addActionListener(e -> cargarDesdeChooser());
         btnRecargar.addActionListener(e -> recargarUltimoArchivo());
         btnPaso.addActionListener(e -> ejecutarPaso());
-        btnEjecutar.addActionListener(e -> temporizador.start());
-        btnDetener.addActionListener(e -> temporizador.stop());
+        btnEjecutar.addActionListener(e -> temporizador.iniciar());
+        btnDetener.addActionListener(e -> temporizador.detener());
         btnLimpiar.addActionListener(e -> limpiarTodo());
         btnEstados.addActionListener(e -> mostrarEstadosBCP());
-        barraSuperior.add(btnEstados);
-
-        temporizador = new javax.swing.Timer(400, e -> ejecutarPaso());
+        btnEstadisticas.addActionListener(e -> mostrarEstadisticas());
+        
+        temporizador = new Temporizador(1000, this::ejecutarPaso);
     }
     
     private JPanel construirPanelCPU() {
@@ -213,7 +245,7 @@ public class VentanaSimulador extends JFrame {
         int baseCodigo = proximaDireccionLibre;
         int baseDatos = baseCodigo + cargado.longitud();
         if (baseDatos >= memoria.tamano) {
-            // No hay espacio contiguo en memoria (caso raro si compactación no fue suficiente)
+            // No hay espacio contiguo en memoria 
             JOptionPane.showMessageDialog(this, "No hay espacio en memoria para cargar el proceso en memoria.", "Memoria llena", JOptionPane.ERROR_MESSAGE);
             // poner en espera
             p.bcp.cambiarEstado(EstadoProceso.ESPERA);
@@ -288,93 +320,12 @@ public class VentanaSimulador extends JFrame {
                             "Archivo #" + nuevo.bcp.idProceso + " puesto en cola de espera.",
                             "En espera", JOptionPane.INFORMATION_MESSAGE);
                 }
-            } catch (Exception ex) {
+            } catch (ExcepcionAsm | HeadlessException | IOException ex) {
                 JOptionPane.showMessageDialog(this, ex.getMessage(), "Formato .asm inválido", JOptionPane.ERROR_MESSAGE);
             }
         }
     }
 
-    private void cargarArchivoAsm(File archivo, int idProceso) {
-        try {
-            List<String> lineas = Files.readAllLines(archivo.toPath(), StandardCharsets.UTF_8);
-            Programa cargado = Cargador.parsear(lineas);
-
-            int baseCodigo = proximaDireccionLibre;
-            int baseDatos = baseCodigo + cargado.longitud();
-            if (baseDatos >= memoria.tamano) throw new ExcepcionAsm("Memoria insuficiente.");
-
-            // Escribir programa en memoria
-            for (int i = 0; i < cargado.longitud(); i++) {
-                memoria.asignarCelda(baseCodigo + i, cargado.lineaOriginal(i));
-            }
-
-            // Crear BCP
-            BCP nuevoBCP = new BCP();
-            nuevoBCP.idProceso = idProceso;
-            nuevoBCP.cambiarEstado(EstadoProceso.LISTO);
-            nuevoBCP.baseCodigo = baseCodigo;
-            nuevoBCP.limiteCodigo = baseCodigo + cargado.longitud() - 1;
-            nuevoBCP.baseDatos = baseDatos;
-
-            // Crear Proceso
-            Proceso nuevo = new Proceso(idProceso, cargado, nuevoBCP, archivo);
-
-            // Encadenar en la lista
-            if (cabeza == null) {
-                cabeza = nuevo;
-                cola = nuevo;
-            } else {
-                cola.siguiente = nuevo;
-                cola = nuevo;
-            }
-
-            // Avanzar puntero de memoria libre
-            proximaDireccionLibre = baseDatos;
-            contProgramas++;
-            
-
-            JOptionPane.showMessageDialog(this,
-                    "Archivo #"+ idProceso+ " cargado correctamente",
-                    "Archivo Cargado", JOptionPane.INFORMATION_MESSAGE);
-            
-
-
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this, ex.getMessage(), "Formato .asm inválido", JOptionPane.ERROR_MESSAGE);
-        }
-    }
-    
-    private void compactarMemoria() {
-        // Empieza a partir del SO
-        int base = memoria.tamanoSO;
-
-        Proceso cursor = cabeza;
-        while (cursor != null) {
-            Programa prog = cursor.programa;
-            int longitud = prog.longitud();
-
-            // Copiar las líneas del programa a la nueva base
-            for (int i = 0; i < longitud; i++) {
-                memoria.asignarCelda(base + i, prog.lineaOriginal(i));
-            }
-
-            // Actualizar BCP con las nuevas direcciones
-            cursor.bcp.baseCodigo = base;
-            cursor.bcp.limiteCodigo = base + longitud - 1;
-            cursor.bcp.baseDatos = base + longitud;
-
-            base += longitud;
-            cursor = cursor.siguiente;
-        }
-
-        // Limpiar el resto de memoria de usuario (opcional, para evitar restos)
-        for (int i = base; i < memoria.tamano; i++) {
-            memoria.asignarCelda(i, "");
-        }
-
-        proximaDireccionLibre = base;
-        modeloMemoria.fireTableDataChanged();
-    }
 
     private void ejecutarPaso() {
         // Si no hay proceso actual, arrancamos desde la cabeza
@@ -387,9 +338,9 @@ public class VentanaSimulador extends JFrame {
             cpu.reiniciar();
             bcp = procesoActual.bcp;
             lblEstado.setText("Ejecutando: " + procesoActual.archivo.getName());
-
+            estadisticaActual = new Estadistica(Integer.toString(bcp.idProceso));
             // Mostrar instrucciones del proceso actual
-            System.out.println(procesoActual.programa.instrucciones);
+            
             modeloInstrucciones.setRowCount(0);
             for (Instruccion inst : procesoActual.programa.instrucciones) {
                 modeloInstrucciones.addRow(new Object[]{
@@ -397,19 +348,23 @@ public class VentanaSimulador extends JFrame {
                         inst.aBinario()
                 });
             }
+            
         }
         procesoActual.bcp.cambiarEstado(EstadoProceso.EJECUTANDO);
 
         // Si terminó este proceso → pasar al siguiente
         if (cpu.estado == CPU.Estado.TERMINADO || cpu.PC >= procesoActual.programa.longitud()) {
-            // marcaremos el proceso actual como terminado
+            // marcamos el proceso actual como terminado
             procesoActual.bcp.cambiarEstado(EstadoProceso.TERMINADO);
+            temporizador.detener();
+            registrarEstadistica();
+            lblEstado.setText("Programa finalizado.");
             actualizarVistas();
 
             // Si el proceso actual es la cabeza, la removemos de la lista enlazada
             if (procesoActual == cabeza) {
                 cabeza = cabeza.siguiente;
-                // si removimos la cola también, actualizar cola
+                
                 if (cabeza == null) cola = null;
             } else {
                 // Si en algún caso procesoActual no fuera la cabeza (por seguridad), 
@@ -425,20 +380,16 @@ public class VentanaSimulador extends JFrame {
                 }
             }
 
-            // reducir contador de procesos en memoria
             contProgramas = Math.max(0, contProgramas - 1);
 
-            // compactar memoria para eliminar huecos y actualizar direcciones
-            //compactarMemoria();
-
+            
             // si hay procesos en cola de espera -> traer el primero a memoria
             if (!colaEspera.isEmpty()) {
                 Proceso siguienteEnEspera = colaEspera.poll();
-                // cargarEnMemoria colocará el proceso al final (en proximaDireccionLibre)
                 cargarEnMemoria(siguienteEnEspera);
             }
 
-            // cambiar el procesoActual al nuevo cabeza (el siguiente a ejecutar)
+
             procesoActual = cabeza;
             if (procesoActual == null) {
                 lblEstado.setText("Todos los programas han sido ejecutados.");
@@ -459,14 +410,30 @@ public class VentanaSimulador extends JFrame {
                             inst.aBinario()
                     });
                 }
+                estadisticaActual = new Estadistica(Integer.toString(bcp.idProceso));
+                
                 return;
             }
         }
+        
+    if (instruccionActual == null) {
+        if (cpu.PC >= procesoActual.programa.longitud()) {
+            cpu.estado = CPU.Estado.TERMINADO;
+            registrarEstadistica();
+            lblEstado.setText("Fin del programa.");
+            return;
+        }
+        instruccionActual = procesoActual.programa.obtener(cpu.PC);
+        ciclosPendientes = DURACIONES.getOrDefault(instruccionActual.opcode, 1);
+    }
 
-        // Ejecutar instrucción actual
-        Instruccion inst = procesoActual.programa.obtener(cpu.PC);
-        ejecutarInstruccion(inst);
+    ciclosPendientes--;
+
+    if (ciclosPendientes <= 0) {
+        ejecutarInstruccion(instruccionActual);
         cpu.PC++;
+        instruccionActual = null;
+    }
 
         actualizarVistas();
         modeloMemoria.fireTableDataChanged();
@@ -479,54 +446,188 @@ public class VentanaSimulador extends JFrame {
         List<String> args = inst.operandos;
         try {
             switch (op) {
-                case "MOV":
+                case "MOV" -> {
                     int val = obtenerValorOperando(args.get(1));
                     cpu.asignarRegistro(args.get(0), val);
-                    break;
-                case "LOAD":
+                }
+
+                case "LOAD" -> {
                     cpu.AC = cpu.obtenerRegistro(args.get(0));
-                    break;
-                case "STORE":
+                    cpu.ZF = (cpu.AC == 0);
+                }
+
+                case "STORE" -> {
                     int direccion = procesoActual.bcp.baseDatos + cpu.obtenerRegistro(args.get(0));
                     String valor = String.valueOf(cpu.AC);
                     memoria.asignarCelda(direccion, valor);
 
                     // Guardamos en el BCP
                     procesoActual.bcp.ultimoResultado = "Dir " + direccion + " = " + valor;
-                    break;
-                case "ADD":
+                }
+
+                case "ADD" -> {
                     cpu.AC += cpu.obtenerRegistro(args.get(0));
                     cpu.ZF = (cpu.AC == 0);
-                    break;
-                case "SUB":
+                }
+
+                case "SUB" -> {
                     cpu.AC -= cpu.obtenerRegistro(args.get(0));
                     cpu.ZF = (cpu.AC == 0);
-                    break;
-                case "JMP":
-                    cpu.PC = procesoActual.programa.etiquetas.getOrDefault(args.get(0), cpu.PC);
-                    break;
-                case "JZ":
-                    if (cpu.ZF) cpu.PC = procesoActual.programa.etiquetas.getOrDefault(args.get(0), cpu.PC);
-                    break;
-                case "JNZ":
-                    if (!cpu.ZF) cpu.PC = procesoActual.programa.etiquetas.getOrDefault(args.get(0), cpu.PC);
-                    break;
-                case "HALT":
-                    cpu.estado = CPU.Estado.TERMINADO;
-                    break;
-                case "NOP":
-                    break;
-                default:
-                    throw new RuntimeException("Instrucción no implementada: " + op);
+                }
+
+                case "INC" -> {
+                    if (args.isEmpty()) {
+                        cpu.AC++;
+                        cpu.ZF = (cpu.AC == 0);
+                    } else {
+                        String r = args.get(0);
+                        int newVal = cpu.obtenerRegistro(r) + 1;
+                        cpu.asignarRegistro(r, newVal);
+                        cpu.ZF = (newVal == 0);
+                    }
+                }
+
+                case "DEC" -> {
+                    if (args.isEmpty()) {
+                        cpu.AC--;
+                        cpu.ZF = (cpu.AC == 0);
+                    } else {
+                        String r = args.get(0);
+                        int newVal = cpu.obtenerRegistro(r) - 1;
+                        cpu.asignarRegistro(r, newVal);
+                        cpu.ZF = (newVal == 0);
+                    }
+                }
+
+                case "SWAP" -> {
+                    String r1 = args.get(0), r2 = args.get(1);
+                    int v1 = cpu.obtenerRegistro(r1);
+                    int v2 = cpu.obtenerRegistro(r2);
+                    cpu.asignarRegistro(r1, v2);
+                    cpu.asignarRegistro(r2, v1);
+                }
+
+                case "CMP" -> {
+                    int a = cpu.obtenerRegistro(args.get(0));
+                    int b = cpu.obtenerRegistro(args.get(1));
+                    cpu.ZF = (a == b);
+                    cpu.CF = (a < b);
+                }
+
+                case "JE" -> {
+                    if (cpu.ZF) cpu.PC = resolverDestino(args.get(0));
+                }
+
+                case "JNE" -> {
+                    if (!cpu.ZF) cpu.PC = resolverDestino(args.get(0));
+                }
+
+                case "JMP" -> cpu.PC = resolverDestino(args.get(0));
+
+                case "PUSH" -> cpu.pila.push(cpu.obtenerRegistro(args.get(0)));
+
+                case "POP" -> {
+                    if (cpu.pila.isEmpty()) throw new RuntimeException("Pila vacía");
+                    cpu.asignarRegistro(args.get(0), cpu.pila.pop());
+                }
+
+                case "PARAM" -> {
+                    if (args.size() > 3) throw new RuntimeException("PARAM admite máximo 3 valores");
+                    for (String sval : args) {
+                        if (!sval.matches("[-+]?[0-9]+")) throw new RuntimeException("PARAM solo acepta números");
+                        cpu.pila.push(Integer.valueOf(sval));
+                    }
+                }
+
+                case "INT" -> manejarINT(args.get(0));
+
+                case "HALT" -> cpu.estado = CPU.Estado.TERMINADO;
+
+                case "NOP" -> {
+                }
+
+                default -> throw new RuntimeException("Instrucción no implementada: " + op);
             }
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             cpu.estado = CPU.Estado.ERROR;
-            procesoActual.bcp.cambiarEstado(EstadoProceso.ERROR);
             lblEstado.setText("Error en instrucción: " + inst.opcode + " -> " + e.getMessage());
-            temporizador.stop();
+            temporizador.detener();
         }
     }
 
+    private int resolverDestino(String token) {
+        token = token.trim();
+
+        if (token.matches("[+-]\\d+")) {
+            return cpu.PC + Integer.parseInt(token);
+        }
+
+        Integer pos = procesoActual.programa.etiquetas.get(token.toUpperCase());
+        if (pos != null) return pos;
+
+        if (token.matches("\\d+")) return Integer.parseInt(token);
+        throw new RuntimeException("Destino inválido: " + token);
+    }
+    
+    private void manejarINT(String code) {
+        code = code.toUpperCase().replace("H", "");
+
+        switch (code) {
+            case "20" -> {
+                cpu.estado = CPU.Estado.TERMINADO;
+                temporizador.detener();
+                lblEstado.setText("INT 20H -> Programa finalizado");
+            }
+
+            case "10" -> JOptionPane.showMessageDialog(this,
+                        "INT 10H -> Valor en DX = " + cpu.obtenerRegistro("DX"),
+                        "Salida de pantalla", JOptionPane.INFORMATION_MESSAGE);
+
+            case "09" -> {
+                while (true) {
+                    JTextField txtInput = new JTextField();
+                    txtInput.setDocument(new javax.swing.text.PlainDocument() {
+                        @Override
+                        public void insertString(int offs, String str, javax.swing.text.AttributeSet a) throws javax.swing.text.BadLocationException {
+                            if (str == null) return;
+                            if (getLength() + str.length() > 3) return;
+                            if (!str.matches("\\d+")) return;
+                            super.insertString(offs, str, a);
+                        }
+                    });
+
+                    int ok = JOptionPane.showConfirmDialog(this, txtInput,
+                            "INT 09H -> Ingrese número (0-255)", JOptionPane.OK_CANCEL_OPTION);
+
+                    if (ok != JOptionPane.OK_OPTION) {
+                        continue;
+                    }
+
+                    String valStr = txtInput.getText().trim();
+                    if (valStr.isEmpty()) {
+                        JOptionPane.showMessageDialog(this, "Debe ingresar un valor.", "Error", JOptionPane.ERROR_MESSAGE);
+                        continue;
+                    }
+
+                    try {
+                        int val = Integer.parseInt(valStr);
+                        if (val < 0 || val > 255) {
+                            JOptionPane.showMessageDialog(this, "El valor debe estar entre 0 y 255.", "Error", JOptionPane.ERROR_MESSAGE);
+                            continue;
+                        }
+                        cpu.asignarRegistro("DX", val);
+                        lblEstado.setText("INT 09H -> DX = " + val);
+                        break;
+                    } catch (NumberFormatException ex) {
+                        JOptionPane.showMessageDialog(this, "Entrada inválida. Debe ser numérica.", "Error", JOptionPane.ERROR_MESSAGE);
+                    }
+                }
+            }
+
+
+            default -> throw new RuntimeException("INT no soportado: " + code);
+        }
+    }
 
     private int obtenerValorOperando(String token) {
         if (cpu.registros.containsKey(token)) return cpu.obtenerRegistro(token);
@@ -545,13 +646,13 @@ public class VentanaSimulador extends JFrame {
         lblZF.setText(String.valueOf(cpu.ZF));
 
         if (procesoActual != null) {
-            BCP bcp = procesoActual.bcp;
-            lblIdProceso.setText(String.valueOf(bcp.idProceso));
-            lblEstadoBCP.setText(bcp.estado.toString());
-            lblBaseCodigo.setText(String.valueOf(bcp.baseCodigo));
-            lblLimiteCodigo.setText(String.valueOf(bcp.limiteCodigo));
-            lblBaseDatos.setText(String.valueOf(bcp.baseDatos));
-            lblUltimoResultado.setText(bcp.ultimoResultado);
+            BCP bcpLocal = procesoActual.bcp;
+            lblIdProceso.setText(String.valueOf(bcpLocal.idProceso));
+            lblEstadoBCP.setText(bcpLocal.estado.toString());
+            lblBaseCodigo.setText(String.valueOf(bcpLocal.baseCodigo));
+            lblLimiteCodigo.setText(String.valueOf(bcpLocal.limiteCodigo));
+            lblBaseDatos.setText(String.valueOf(bcpLocal.baseDatos));
+            lblUltimoResultado.setText(bcpLocal.ultimoResultado);
 
             Programa prog = procesoActual.programa;
             if (prog != null && cpu.PC < prog.longitud()) {
@@ -559,12 +660,33 @@ public class VentanaSimulador extends JFrame {
             }
         }
     }
+    
+    private void registrarEstadistica() {
+        if (estadisticaActual != null) {
+            estadisticaActual.marcarFin();
+            estadisticas.add(estadisticaActual);
+            JOptionPane.showMessageDialog(this,
+                    "Programa finalizado.\n" + estadisticaActual.toString(),
+                    "Estadística", JOptionPane.INFORMATION_MESSAGE);
+            estadisticaActual = null;
+        }
+    }
 
-    public BCP getBcp() {
-        return bcp;
+    private void mostrarEstadisticas() {
+        if (estadisticas.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No hay estadísticas registradas.");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Estadistica est : estadisticas) {
+            sb.append(est.toString()).append("\n");
+        }
+        JTextArea area = new JTextArea(sb.toString(), 10, 50);
+        area.setEditable(false);
+        JOptionPane.showMessageDialog(this, new JScrollPane(area),
+                "Historial de Estadísticas", JOptionPane.INFORMATION_MESSAGE);
     }
     
-
     private int obtenerPCAbsoluto() {
         if (procesoActual == null || procesoActual.programa == null) return -1;
         return procesoActual.bcp.baseCodigo + cpu.PC;
@@ -595,12 +717,12 @@ public class VentanaSimulador extends JFrame {
 
         Object[][] datos = new Object[todos.size()][columnas.length];
         for (int i = 0; i < todos.size(); i++) {
-            BCP bcp = todos.get(i);
-            datos[i][0] = bcp.idProceso;
-            datos[i][1] = bcp.estado;
-            datos[i][2] = bcp.baseCodigo;
-            datos[i][3] = bcp.limiteCodigo;
-            datos[i][4] = bcp.baseDatos;
+            BCP bcpLocal = todos.get(i);
+            datos[i][0] = bcpLocal.idProceso;
+            datos[i][1] = bcpLocal.estado;
+            datos[i][2] = bcpLocal.baseCodigo;
+            datos[i][3] = bcpLocal.limiteCodigo;
+            datos[i][4] = bcpLocal.baseDatos;
         }
 
         JTable tabla = new JTable(datos, columnas);
@@ -612,4 +734,9 @@ public class VentanaSimulador extends JFrame {
         dialogo.setLocationRelativeTo(this);
         dialogo.setVisible(true);
     }
+    
+    public BCP getBcp() {
+        return bcp;
+    }
+
 }

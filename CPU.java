@@ -17,7 +17,10 @@ public class CPU {
     public int PC = 0;
     public int AC = 0;
     public boolean ZF = false;
+    public boolean CF = false;
     public Estado estado = Estado.LISTO;
+    
+    public final Stack<Integer> pila = new Stack<>();
 
     public CPU() {
         registros.put("AX", 0);
@@ -31,6 +34,7 @@ public class CPU {
         PC = 0;
         AC = 0;
         ZF = false;
+        CF = false;
         estado = Estado.LISTO;
     }
 
@@ -45,3 +49,4 @@ public class CPU {
         else throw new RuntimeException("Registro desconocido: " + r);
     }
 }
+
